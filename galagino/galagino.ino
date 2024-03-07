@@ -936,7 +936,7 @@ startAndCoinState=
  
   }
   vTaskDelay(1);
-  Serial.println(startAndCoinState);
+  //Serial.println(startAndCoinState);
   return startAndCoinState;
  
 }

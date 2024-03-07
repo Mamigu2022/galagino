@@ -16,7 +16,48 @@
 #include "emulation.h"
 
 #include "tileaddr.h"
+#include <Bluepad32.h>
 
+ControllerPtr myControllers[BP32_MAX_GAMEPADS];
+
+// This callback gets called any time a new gamepad is connected.
+// Up to 4 gamepads can be connected at the same time.
+void onConnectedController(ControllerPtr ctl) {
+    bool foundEmptySlot = false;
+    
+        if (myControllers[0] == nullptr) {
+            Serial.printf("CALLBACK: Controller is connected, index=%d\n", 0);
+            // Additionally, you can get certain gamepad properties like:
+            // Model, VID, PID, BTAddr, flags, etc.
+            ControllerProperties properties = ctl->getProperties();
+            Serial.printf("Controller model: %s, VID=0x%04x, PID=0x%04x\n", ctl->getModelName().c_str(), properties.vendor_id,
+                           properties.product_id);
+            myControllers[0] = ctl;
+            foundEmptySlot = true;
+            
+        }
+    
+    if (!foundEmptySlot) {
+        Serial.println("CALLBACK: Controller connected, but could not found empty slot");
+    }
+}
+
+void onDisconnectedController(ControllerPtr ctl) {
+    bool foundController = false;
+
+  
+        if (myControllers[0] == ctl) {
+            Serial.printf("CALLBACK: Controller disconnected from index=%d\n", 0);
+            myControllers[0] = nullptr;
+            foundController = true;
+            
+        }
+    
+
+    if (!foundController) {
+        Serial.println("CALLBACK: Controller disconnected, but not found in myControllers");
+    }
+}
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 4, 5)
 // See https://github.com/espressif/arduino-esp32/issues/8467
 #define WORKAROUND_I2S_APLL_PROBLEM
@@ -792,7 +833,8 @@ void setup() {
 #ifdef WORKAROUND_I2S_APLL_PROBLEM
   Serial.println("I2S APLL workaround active"); 
 #endif
-
+BP32.setup(&onConnectedController, &onDisconnectedController);
+BP32.forgetBluetoothKeys();
   // this should not be needed as the CPU runs by default on 240Mht nowadays
   setCpuFrequencyMhz(240000000);
 
@@ -807,19 +849,19 @@ void setup() {
 
   // make button pins inputs
   pinMode(BTN_START_PIN, INPUT_PULLUP);
-#ifdef BTN_COIN_PIN
-  pinMode(BTN_COIN_PIN, INPUT_PULLUP);
-#endif
 
-#ifdef NUNCHUCK_INPUT
-  nunchuckSetup();
-#else
+  pinMode(BTN_COIN_PIN, INPUT_PULLUP);
+
+
+//#ifdef NUNCHUCK_INPUT
+//  nunchuckSetup();
+//#else
   pinMode(BTN_LEFT_PIN, INPUT_PULLUP);
   pinMode(BTN_RIGHT_PIN, INPUT_PULLUP);
   pinMode(BTN_DOWN_PIN, INPUT_PULLUP);
   pinMode(BTN_UP_PIN, INPUT_PULLUP);
   pinMode(BTN_FIRE_PIN, INPUT_PULLUP);
-#endif
+//#endif
 
   // initialize audio to default bitrate (24khz unless dkong is
   // the only game installed, then audio will directly be 
@@ -849,115 +891,65 @@ unsigned char buttons_get(void) {
   // be implemented by the start button. Whenever the start button 
   // is pressed, a virtual coin button will be sent first 
   unsigned char input_states = 0;
-#ifdef NUNCHUCK_INPUT
-  input_states |= getNunchuckInput();
-#endif;
+//#ifdef NUNCHUCK_INPUT
+//  input_states |= getNunchuckInput();
+//#endif;
 
-#ifndef BTN_COIN_PIN
-#ifdef BTN_COIN_PIN
-  input_states |= (!digitalRead(BTN_COIN_PIN)) ? BUTTON_EXTRA : 0;
-#else
-  input_states |= (!digitalRead(BTN_START_PIN)) ? BUTTON_EXTRA : 0;
-#endif
-  static unsigned long virtual_coin_timer = 0;
-  static int virtual_coin_state = 0;
-  switch(virtual_coin_state)  {
-    case 0:  // idle state
-      if(input_states & BUTTON_EXTRA) {
-        virtual_coin_state = 1;   // virtual coin pressed
-        virtual_coin_timer = millis();
-      }
-      break;
-    case 1:  // start was just pressed
-      // check if 100 milliseconds have passed
-      if(millis() - virtual_coin_timer > 100) {
-        virtual_coin_state = 2;   // virtual coin released
-        virtual_coin_timer = millis();        
-      }
-      break;
-    case 2:  // virtual coin was released
-      // check if 500 milliseconds have passed
-      if(millis() - virtual_coin_timer > 500) {
-        virtual_coin_state = 3;   // pause between virtual coin an start ended
-        virtual_coin_timer = millis();        
-      }
-      break;
-    case 3:  // pause ended
-      // check if 100 milliseconds have passed
-      if(millis() - virtual_coin_timer > 100) {
-        virtual_coin_state = 4;   // virtual start ended
-        virtual_coin_timer = millis();        
-      }
-      break;
-    case 4:  // virtual start has ended
-      // check if start button is actually still pressed
-      if(! (input_states & BUTTON_EXTRA))
-        virtual_coin_state = 0;   // button has been released, return to idle
-      break;
-  }
-#endif
+unsigned char startAndCoinState;
+ 
+ ControllerPtr myController = myControllers[0];
+if (myController && myController->isConnected()) {
+            //if (myController->isGamepad()) {
+        if(myController->miscButtons()==6)  emulation_reset() ;
 
-#ifndef SINGLE_MACHINE
-  static unsigned long reset_timer = 0;
-  
-  // reset if coin (or start if no coin is configured) is held for
-  // more than 1 second
-  if(input_states & BUTTON_EXTRA) {
-    if(machine != MCH_MENU) {
+        int palanca=  myController->dpad();    
 
-#ifdef MASTER_ATTRACT_GAME_TIMEOUT
-       // if the game was started by the master attract mode then the user
-       // pressing coin (or start) stops the timer, so the game keeps
-       // running as long as the user wants
-       master_attract_timeout = 0;
-#endif
+  startAndCoinState=
+//      // there is a coin pin -> coin and start work normal
 
-      if(!reset_timer)
-        reset_timer = millis();
+    ((myController->miscButtons()!=4) ? 0 : BUTTON_START ) |
+    ((myController->miscButtons()!=2) ? 0 : BUTTON_COIN )|
+    //Serial.println(startAndCoinState);
+    
+    ((palanca>10) ? 0 : palanca)|
 
-      if(millis() - reset_timer > 1000) {
-        // disable backlight if pin is specified
-#ifdef TFT_BL
-        digitalWrite(TFT_BL, LOW);
-#endif
+//      ((myController->dpad()==8) ? BUTTON_LEFT : 0) |
+//      ((myController->dpad()==4) ? BUTTON_RIGHT : 0) |
+//      ((myController->dpad()==1) ? BUTTON_UP : 0) |
+//      ((myController->dpad()==2) ? BUTTON_DOWN : 0) |
+      ((myController->buttons()==1) ? BUTTON_FIRE : 0);
+//
+ //          }
+}
+else{
+startAndCoinState=
 
-        emulation_reset();
-      }
-    }    
-  } else
-    reset_timer = 0;
-#endif
-  
-  unsigned char startAndCoinState =
-#ifdef BTN_COIN_PIN
-      // there is a coin pin -> coin and start work normal
+//      // there is a coin pin -> coin and start work normal
       (digitalRead(BTN_START_PIN) ? 0 : BUTTON_START) |
       (digitalRead(BTN_COIN_PIN) ? 0 : BUTTON_COIN);
-#else
-      ((virtual_coin_state != 1) ? 0 : BUTTON_COIN) |
-      (((virtual_coin_state != 3) && (virtual_coin_state != 4)) ? 0 : BUTTON_START); 
-#endif
 
-#ifdef NUNCHUCK_INPUT
-      return startAndCoinState |
-      input_states;
-#else
-      return startAndCoinState |
       (digitalRead(BTN_LEFT_PIN) ? 0 : BUTTON_LEFT) |
       (digitalRead(BTN_RIGHT_PIN) ? 0 : BUTTON_RIGHT) |
       (digitalRead(BTN_UP_PIN) ? 0 : BUTTON_UP) |
       (digitalRead(BTN_DOWN_PIN) ? 0 : BUTTON_DOWN) |
       (digitalRead(BTN_FIRE_PIN) ? 0 : BUTTON_FIRE);
-#endif
+ 
+  }
+  vTaskDelay(1);
+  Serial.println(startAndCoinState);
+  return startAndCoinState;
+ 
 }
 
 void loop(void) {
   // run video in main task. This will send signals
   // to the emulation task in the background to 
   // synchronize video
+ 
   update_screen(); 
+ BP32.update();
+//#ifdef LED_PIN
+//  leds_update();
+//#endif
 
-#ifdef LED_PIN
-  leds_update();
-#endif
 }
